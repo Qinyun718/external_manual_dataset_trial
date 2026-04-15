@@ -17,9 +17,11 @@
 
 将工作过程整理为结构化的 Issue 题目，保存到 `$ISSUE_ROOT/` 目录，并提交到远程仓库的独立分支（一题一分支）供评测使用。
 
-> **提交仓库**：`https://github.com/Qinyun718/external_manual_dataset_trial.git`
+> **提交仓库**：你 fork 出来的仓库（格式：`https://github.com/<你的组织或用户名>/external_manual_dataset_trial.git`）
 >
 > **分支命名**：`<你的名字拼音>/<task-slug>`，如 `huangming/add-stepper-nuxtui`
+>
+> **前置操作**：请先在 GitHub 上 fork 本仓库（`Qinyun718/external_manual_dataset_trial`），后续所有题目都提交到你自己 fork 的仓库。
 
 > **任务类型说明**（三选一，打包流程因类型而异）：
 >
@@ -996,16 +998,21 @@ exit
 
 ## Step 9：提交到 Git 仓库
 
-**目标仓库**：`https://github.com/Qinyun718/external_manual_dataset_trial.git`
+**目标仓库**：你 fork 出来的仓库（`https://github.com/<你的组织或用户名>/external_manual_dataset_trial.git`）
 **分支命名规则**：`<你的名字拼音>/<task-slug>`（如 `huangming/add-stepper-nuxtui`、`wangyanqing/add-rate-limiter-hono`）
 
+> **前置操作（只需做一次）**：在 GitHub 上 fork `Qinyun718/external_manual_dataset_trial` 到你自己的账号/组织下。后续所有题目都提交到你的 fork。
+
 ```bash
+# 0. 设置你 fork 的仓库地址（替换为你的实际地址，只需设置一次）
+MY_FORK="https://github.com/<你的组织或用户名>/external_manual_dataset_trial.git"
+
 # 1. 初始化一个干净的本地仓库（不继承 main 分支内容）
-REPO_CLONE_DIR="$ISSUE_ROOT/../_external_manual_dataset_trial_clone"
+REPO_CLONE_DIR="$ISSUE_ROOT/../_my_fork_clone"
 mkdir -p "$REPO_CLONE_DIR"
 cd "$REPO_CLONE_DIR"
 git init
-git remote add origin https://github.com/Qinyun718/external_manual_dataset_trial.git
+git remote add origin "$MY_FORK"
 
 # 2. 创建 orphan 分支（无父提交，分支内只有题目文件，不含 main 的内容）
 BRANCH="<你的名字拼音>/<task-slug>"
@@ -1025,7 +1032,7 @@ git commit -m "task: add <task-slug>
 影响文件: <文件路径>
 现象/考察点: <一句话描述>"
 
-# 5. 推送到远程
+# 5. 推送到你的 fork
 git push -u origin "$BRANCH"
 ```
 
@@ -1034,10 +1041,10 @@ git push -u origin "$BRANCH"
 ```
 Issue 已提交至：
   分支：<你的名字拼音>/<task-slug>
-  URL：https://github.com/Qinyun718/external_manual_dataset_trial/tree/<你的名字拼音>/<task-slug>
+  URL：https://github.com/<你的组织或用户名>/external_manual_dataset_trial/tree/<你的名字拼音>/<task-slug>
 
 评测人员复现步骤：
-  git clone https://github.com/Qinyun718/external_manual_dataset_trial.git
+  git clone <你 fork 的仓库地址>
   git checkout <你的名字拼音>/<task-slug>
   bash reproduce.sh
 ```
@@ -1107,7 +1114,7 @@ Issue 已提交至：
 - 用户需求中引用的参考文件、对照文件、样例数据都已一并打包
 - init / final / code 内的目录结构保持原项目相对关系，运行时相对路径不会失真
 - `workspace/` 已加入 `.gitignore`
-- 已成功推送到 `https://github.com/Qinyun718/external_manual_dataset_trial.git` 的独立分支
+- 已成功推送到你 fork 的仓库的独立分支
 - 输出了分支 URL 和评测人员复现步骤
 
 ---

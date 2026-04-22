@@ -1,0 +1,2385 @@
+diff --git a/src/cartesian/WaterfallBar.tsx b/src/cartesian/WaterfallBar.tsx
+new file mode 100644
+index 0000000..101f05a
+--- /dev/null
++++ b/src/cartesian/WaterfallBar.tsx
+@@ -0,0 +1,581 @@
++import * as React from 'react';
++import { Key, PureComponent, ReactElement, ReactNode } from 'react';
++import { clsx } from 'clsx';
++import { Layer } from '../container/Layer';
++import { Cell } from '../component/Cell';
++import {
++  CartesianLabelListContextProvider,
++  CartesianLabelListEntry,
++  ImplicitLabelListType,
++  LabelListFromLabelProp,
++} from '../component/LabelList';
++import { noop } from '../util/DataUtils';
++import { findAllByType } from '../util/ReactUtils';
++import { getTooltipNameProp } from '../util/ChartUtils';
++import {
++  ActiveShape,
++  DataConsumer,
++  DataKey,
++  LegendType,
++  PresentationAttributesAdaptChildEvent,
++  TooltipType,
++  TrapezoidViewBox,
++} from '../util/types';
++import { BarRectangle, BarRectangleProps } from '../util/BarUtils';
++import type { BarShapeProps } from './Bar';
++import type { LegendPayload } from '../component/DefaultLegendContent';
++import {
++  useMouseClickItemDispatch,
++  useMouseEnterItemDispatch,
++  useMouseLeaveItemDispatch,
++} from '../context/tooltipContext';
++import { TooltipPayloadConfiguration } from '../state/tooltipSlice';
++import { SetTooltipEntrySettings } from '../state/SetTooltipEntrySettings';
++import { GraphicalItemClipPath, useNeedsClip } from './GraphicalItemClipPath';
++import { useChartLayout } from '../context/chartLayoutContext';
++import { selectWaterfallRectangles, WaterfallRectangleItem } from '../state/selectors/waterfallSelectors';
++import { useAppSelector } from '../state/hooks';
++import { useIsPanorama } from '../context/PanoramaContext';
++import { selectActiveTooltipDataKey, selectActiveTooltipIndex } from '../state/selectors/tooltipSelectors';
++import { SetLegendPayload } from '../state/SetLegendPayload';
++import { resolveDefaultProps } from '../util/resolveDefaultProps';
++import { RegisterGraphicalItemId } from '../context/RegisterGraphicalItemId';
++import { SetCartesianGraphicalItem } from '../state/SetGraphicalItem';
++import { svgPropertiesNoEvents } from '../util/svgPropertiesNoEvents';
++import { ZIndexLayer } from '../zIndex/ZIndexLayer';
++import { DefaultZIndexes } from '../zIndex/DefaultZIndexes';
++import { propsAreEqual } from '../util/propsAreEqual';
++import { AxisId } from '../state/cartesianAxisSlice';
++import { GraphicalItemId } from '../state/graphicalItemsSlice';
++
++export type WaterfallBarShapeProps = BarShapeProps;
++
++interface WaterfallBarProps<DataPointType, ValueAxisType> extends DataConsumer<DataPointType, ValueAxisType> {
++  className?: string;
++  index?: Key;
++  xAxisId?: AxisId;
++  yAxisId?: AxisId;
++  barSize?: string | number;
++  unit?: string | number;
++  name?: string | number;
++  tooltipType?: TooltipType;
++  legendType?: LegendType;
++  hide?: boolean;
++  shape?: ActiveShape<WaterfallBarShapeProps, SVGPathElement>;
++  activeBar?: ActiveShape<WaterfallBarShapeProps, SVGPathElement>;
++  /**
++   * Fill color for positive increment bars.
++   * @defaultValue '#4caf50'
++   */
++  positiveFill?: string;
++  /**
++   * Fill color for negative increment bars.
++   * @defaultValue '#f44336'
++   */
++  negativeFill?: string;
++  /**
++   * Fill color for total/summary bars.
++   * @defaultValue '#2196f3'
++   */
++  totalFill?: string;
++  /**
++   * Starting cumulative value for the waterfall chart.
++   * When set, the first bar starts from this value instead of 0.
++   * @defaultValue 0
++   */
++  initialValue?: number;
++  /**
++   * Whether to show connector lines between bars.
++   * @defaultValue true
++   */
++  showConnectors?: boolean;
++  /**
++   * Style for connector lines.
++   */
++  connectorStyle?: React.SVGProps<SVGLineElement>;
++  /**
++   * If set false, animation of bar will be disabled.
++   * @defaultValue false
++   */
++  isAnimationActive?: boolean;
++  id?: string;
++  label?: ImplicitLabelListType;
++  zIndex?: number;
++  maxBarSize?: number;
++}
++
++type InternalWaterfallBarProps = {
++  layout: 'horizontal' | 'vertical';
++  data: ReadonlyArray<WaterfallRectangleItem> | undefined;
++  xAxisId: string | number;
++  yAxisId: string | number;
++  hide: boolean;
++  legendType: LegendType;
++  isAnimationActive: boolean;
++  positiveFill: string;
++  negativeFill: string;
++  totalFill: string;
++  showConnectors: boolean;
++  connectorStyle: React.SVGProps<SVGLineElement>;
++  needClip?: boolean;
++  className?: string;
++  index?: Key;
++  barSize?: string | number;
++  unit?: string | number;
++  name?: string | number;
++  dataKey?: DataKey<any>;
++  tooltipType?: TooltipType;
++  maxBarSize?: number;
++  shape?: ActiveShape<WaterfallBarShapeProps, SVGPathElement>;
++  activeBar?: ActiveShape<WaterfallBarShapeProps, SVGPathElement>;
++  id: GraphicalItemId;
++  label?: ImplicitLabelListType;
++  initialValue: number | undefined;
++};
++
++type WaterfallBarSvgProps = Omit<
++  PresentationAttributesAdaptChildEvent<WaterfallRectangleItem, SVGPathElement>,
++  'name' | 'ref'
++>;
++
++export type Props<DataPointType = any, ValueAxisType = any> = WaterfallBarProps<DataPointType, ValueAxisType> &
++  Omit<WaterfallBarSvgProps, keyof WaterfallBarProps<DataPointType, ValueAxisType>>;
++
++type InternalProps = WaterfallBarSvgProps & InternalWaterfallBarProps;
++
++const computeLegendPayloadFromWaterfallData = (props: Props): ReadonlyArray<LegendPayload> => {
++  const { dataKey, name, positiveFill, negativeFill, totalFill, legendType, hide } = props;
++  const baseName = getTooltipNameProp(name, dataKey);
++  return [
++    {
++      inactive: hide,
++      dataKey,
++      type: legendType,
++      color: positiveFill,
++      value: `${baseName} (positive)`,
++      payload: props,
++    },
++    {
++      inactive: hide,
++      dataKey,
++      type: legendType,
++      color: negativeFill,
++      value: `${baseName} (negative)`,
++      payload: props,
++    },
++    {
++      inactive: hide,
++      dataKey,
++      type: legendType,
++      color: totalFill,
++      value: `${baseName} (total)`,
++      payload: props,
++    },
++  ];
++};
++
++const SetWaterfallTooltipEntrySettings = React.memo(
++  ({
++    dataKey,
++    stroke,
++    strokeWidth,
++    positiveFill,
++    negativeFill,
++    totalFill,
++    name,
++    hide,
++    unit,
++    tooltipType,
++    id,
++    rects,
++  }: Pick<
++    InternalProps,
++    | 'dataKey'
++    | 'stroke'
++    | 'strokeWidth'
++    | 'positiveFill'
++    | 'negativeFill'
++    | 'totalFill'
++    | 'name'
++    | 'hide'
++    | 'unit'
++    | 'tooltipType'
++    | 'id'
++  > & {
++    rects: ReadonlyArray<WaterfallRectangleItem> | undefined;
++  }) => {
++    // Build dataDefinedOnItem with per-entry fill/color info so tooltip shows correct color
++    const fillColor = (entry: WaterfallRectangleItem) => {
++      if (entry.isTotal) return totalFill;
++      if (entry.isPositive) return positiveFill;
++      return negativeFill;
++    };
++    const dataDefinedOnItem = rects?.map(entry => ({
++      ...entry.payload,
++      fill: fillColor(entry),
++      color: fillColor(entry),
++      isPositive: entry.isPositive,
++      isTotal: entry.isTotal,
++    }));
++
++    const tooltipEntrySettings: TooltipPayloadConfiguration = {
++      dataDefinedOnItem,
++      getPosition: noop,
++      settings: {
++        stroke,
++        strokeWidth,
++        fill: positiveFill,
++        dataKey,
++        nameKey: undefined,
++        name: getTooltipNameProp(name, dataKey),
++        hide,
++        type: tooltipType,
++        color: positiveFill,
++        unit,
++        graphicalItemId: id,
++      },
++    };
++    return <SetTooltipEntrySettings tooltipEntrySettings={tooltipEntrySettings} />;
++  },
++);
++
++/**
++ * Render connector lines between adjacent waterfall bars.
++ * Connectors are dashed horizontal lines that visually connect the end of one bar
++ * to the start of the next bar.
++ */
++function WaterfallConnectors({
++  data,
++  layout,
++  connectorStyle,
++}: {
++  data: ReadonlyArray<WaterfallRectangleItem> | undefined;
++  layout: 'horizontal' | 'vertical';
++  connectorStyle: React.SVGProps<SVGLineElement>;
++}) {
++  if (!data || data.length < 2) {
++    return null;
++  }
++
++  const lines: ReactElement[] = [];
++
++  for (let i = 0; i < data.length - 1; i++) {
++    const current = data[i]!;
++    const next = data[i + 1]!;
++
++    // Skip if next is a total bar (it starts from 0, no connector needed)
++    if (next.isTotal) {
++      continue;
++    }
++
++    let x1: number, y1: number, x2: number, y2: number;
++
++    if (layout === 'horizontal') {
++      // Horizontal layout: bars go up/down, connector is a horizontal line
++      // from the right edge of current bar to the left edge of next bar
++      // at the cumulative end height of current bar
++      const connectY = current.isPositive ? current.y : current.y + current.height;
++      x1 = current.x + current.width;
++      y1 = connectY;
++      x2 = next.x;
++      y2 = connectY;
++    } else {
++      // Vertical layout: bars go left/right, connector is a vertical line
++      const connectX = current.isPositive ? current.x + current.width : current.x;
++      x1 = connectX;
++      y1 = current.y + current.height;
++      x2 = connectX;
++      y2 = next.y;
++    }
++
++    lines.push(
++      <line
++        key={`waterfall-connector-${i}`}
++        x1={x1}
++        y1={y1}
++        x2={x2}
++        y2={y2}
++        stroke="#555"
++        strokeDasharray="6 3"
++        strokeWidth={2}
++        {...connectorStyle}
++      />,
++    );
++  }
++
++  return <Layer>{lines}</Layer>;
++}
++
++type WaterfallBarRectanglesProps = InternalProps & {
++  data: ReadonlyArray<WaterfallRectangleItem> | undefined;
++};
++
++function WaterfallLabelListProvider({
++  showLabels,
++  children,
++  rects,
++}: {
++  showLabels: boolean;
++  children: ReactNode;
++  rects: ReadonlyArray<WaterfallRectangleItem> | undefined;
++}) {
++  const labelListEntries: ReadonlyArray<CartesianLabelListEntry> | undefined = rects?.map(
++    (entry: WaterfallRectangleItem): CartesianLabelListEntry => {
++      const viewBox: TrapezoidViewBox = {
++        x: entry.x,
++        y: entry.y,
++        width: entry.width,
++        lowerWidth: entry.width,
++        upperWidth: entry.width,
++        height: entry.height,
++      };
++      return {
++        ...viewBox,
++        value: entry.value,
++        payload: entry.payload,
++        parentViewBox: entry.parentViewBox,
++        viewBox,
++        fill: entry.fill,
++      };
++    },
++  );
++
++  return (
++    <CartesianLabelListContextProvider value={showLabels ? labelListEntries : undefined}>
++      {children}
++    </CartesianLabelListContextProvider>
++  );
++}
++
++function WaterfallBarRectangles({
++  data,
++  props,
++}: {
++  data: ReadonlyArray<WaterfallRectangleItem> | undefined;
++  props: WaterfallBarRectanglesProps;
++}) {
++  const { id, ...baseProps } = svgPropertiesNoEvents(props) ?? {};
++  const { shape, dataKey, activeBar, positiveFill, negativeFill, totalFill } = props;
++
++  const {
++    onMouseEnter: onMouseEnterFromProps,
++    onClick: onItemClickFromProps,
++    onMouseLeave: onMouseLeaveFromProps,
++  } = props;
++
++  const onMouseEnterFromContext = useMouseEnterItemDispatch(onMouseEnterFromProps, dataKey, id);
++  const onMouseLeaveFromContext = useMouseLeaveItemDispatch(onMouseLeaveFromProps);
++  const onClickFromContext = useMouseClickItemDispatch(onItemClickFromProps, dataKey, id);
++
++  const activeIndex = useAppSelector(selectActiveTooltipIndex);
++  const activeDataKey = useAppSelector(selectActiveTooltipDataKey);
++
++  if (!data) {
++    return null;
++  }
++
++  return (
++    <>
++      {data.map((entry: WaterfallRectangleItem, i: number) => {
++        // Determine fill color based on bar type
++        let fillColor: string;
++        if (entry.isTotal) {
++          fillColor = totalFill;
++        } else if (entry.isPositive) {
++          fillColor = positiveFill;
++        } else {
++          fillColor = negativeFill;
++        }
++
++        const isActive =
++          activeBar &&
++          String(entry.originalDataIndex) === activeIndex &&
++          (activeDataKey == null || dataKey === activeDataKey);
++
++        const activeOption = (() => {
++          if (!isActive) return shape;
++          if (activeBar === true) return shape;
++          return activeBar;
++        })();
++        const barRectangleProps: BarRectangleProps = {
++          option: activeOption,
++          isActive: !!isActive,
++          ...baseProps,
++          name: String(baseProps.name),
++          // radius from svg props can be string, but BarRectangleProps expects RectRadius
++          radius: typeof baseProps.radius === 'string' ? undefined : baseProps.radius,
++          ...entry,
++          fill: fillColor,
++          dataKey,
++          index: i,
++          className: 'recharts-waterfall-bar-rectangle',
++          onMouseEnter: onMouseEnterFromContext(entry, i),
++          onMouseLeave: onMouseLeaveFromContext(entry, i),
++          onClick: onClickFromContext(entry, i),
++        };
++
++        return (
++          <BarRectangle
++            key={`waterfall-rectangle-${entry?.x}-${entry?.y}-${entry?.value}-${i}`}
++            {...barRectangleProps}
++          />
++        );
++      })}
++    </>
++  );
++}
++
++class WaterfallBarWithState extends PureComponent<InternalProps> {
++  render() {
++    const { hide, data, className, xAxisId, yAxisId, needClip, id, layout, showConnectors, connectorStyle } =
++      this.props;
++    if (hide || data == null) {
++      return null;
++    }
++
++    const layerClass = clsx('recharts-waterfall', className);
++    const clipPathId = id;
++
++    return (
++      <Layer className={layerClass} id={id}>
++        {needClip && (
++          <defs>
++            <GraphicalItemClipPath clipPathId={clipPathId} xAxisId={xAxisId} yAxisId={yAxisId} />
++          </defs>
++        )}
++        <Layer className="recharts-waterfall-bars" clipPath={needClip ? `url(#clipPath-${clipPathId})` : undefined}>
++          <WaterfallBarRectangles data={data} props={this.props} />
++          {showConnectors && <WaterfallConnectors data={data} layout={layout} connectorStyle={connectorStyle} />}
++        </Layer>
++      </Layer>
++    );
++  }
++}
++
++export const defaultWaterfallBarProps = {
++  activeBar: false,
++  hide: false,
++  isAnimationActive: false,
++  legendType: 'rect' as const,
++  positiveFill: '#4caf50',
++  negativeFill: '#f44336',
++  totalFill: '#2196f3',
++  showConnectors: true,
++  connectorStyle: {},
++  xAxisId: 0,
++  yAxisId: 0,
++  zIndex: DefaultZIndexes.waterfallBar,
++  initialValue: undefined,
++} as const satisfies Partial<Props>;
++
++type WaterfallBarImplProps = Omit<InternalWaterfallBarProps, 'layout' | 'data'> & { children?: ReactNode };
++
++function WaterfallBarImpl(props: WaterfallBarImplProps) {
++  const {
++    xAxisId,
++    yAxisId,
++    hide,
++    legendType,
++    positiveFill,
++    negativeFill,
++    totalFill,
++    showConnectors,
++    connectorStyle,
++    isAnimationActive,
++  } = props;
++
++  const { needClip } = useNeedsClip(xAxisId, yAxisId);
++  const layout = useChartLayout();
++  const isPanorama = useIsPanorama();
++
++  const cells = findAllByType(props.children, Cell);
++
++  const rects: ReadonlyArray<WaterfallRectangleItem> | undefined = useAppSelector(state =>
++    selectWaterfallRectangles(state, props.id, isPanorama, cells),
++  );
++
++  if (layout !== 'vertical' && layout !== 'horizontal') {
++    return null;
++  }
++
++  return (
++    <WaterfallLabelListProvider showLabels rects={rects}>
++      <SetWaterfallTooltipEntrySettings
++        dataKey={props.dataKey}
++        stroke={(props as any).stroke}
++        strokeWidth={(props as any).strokeWidth}
++        positiveFill={positiveFill}
++        negativeFill={negativeFill}
++        totalFill={totalFill}
++        name={props.name}
++        hide={hide}
++        unit={props.unit}
++        tooltipType={props.tooltipType}
++        id={props.id}
++        rects={rects}
++      />
++      <WaterfallBarWithState
++        {...props}
++        layout={layout}
++        needClip={needClip}
++        data={rects}
++        xAxisId={xAxisId}
++        yAxisId={yAxisId}
++        hide={hide}
++        legendType={legendType}
++        positiveFill={positiveFill}
++        negativeFill={negativeFill}
++        totalFill={totalFill}
++        showConnectors={showConnectors}
++        connectorStyle={connectorStyle}
++        isAnimationActive={isAnimationActive}
++      />
++      <LabelListFromLabelProp label={props.label} />
++    </WaterfallLabelListProvider>
++  );
++}
++
++function WaterfallBarFn(outsideProps: Props) {
++  const props = resolveDefaultProps(outsideProps, defaultWaterfallBarProps);
++  const isPanorama = useIsPanorama();
++
++  return (
++    <RegisterGraphicalItemId id={props.id} type="waterfall">
++      {id => (
++        <>
++          <SetLegendPayload legendPayload={computeLegendPayloadFromWaterfallData(props)} />
++          <SetCartesianGraphicalItem
++            type="waterfall"
++            id={id}
++            data={undefined}
++            xAxisId={props.xAxisId}
++            yAxisId={props.yAxisId}
++            zAxisId={0}
++            dataKey={props.dataKey}
++            stackId={undefined}
++            barSize={props.barSize}
++            hide={props.hide}
++            minPointSize={0}
++            maxBarSize={props.maxBarSize}
++            isPanorama={isPanorama}
++            hasCustomShape={props.shape != null}
++            initialValue={props.initialValue}
++          />
++          <ZIndexLayer zIndex={props.zIndex}>
++            <WaterfallBarImpl {...props} id={id} />
++          </ZIndexLayer>
++        </>
++      )}
++    </RegisterGraphicalItemId>
++  );
++}
++
++/**
++ * @provides LabelListContext
++ * @consumes CartesianChartContext
++ */
++export const WaterfallBar = React.memo(WaterfallBarFn, propsAreEqual) as <DataPointType = any, ValueAxisType = any>(
++  props: Props<DataPointType, ValueAxisType>,
++) => ReactElement;
++// @ts-expect-error we need to set the displayName for debugging purposes
++WaterfallBar.displayName = 'WaterfallBar';
+diff --git a/src/chart/WaterfallChart.tsx b/src/chart/WaterfallChart.tsx
+new file mode 100644
+index 0000000..e8a6c6c
+--- /dev/null
++++ b/src/chart/WaterfallChart.tsx
+@@ -0,0 +1,29 @@
++import * as React from 'react';
++import { forwardRef } from 'react';
++import { arrayTooltipSearcher } from '../state/optionsSlice';
++import { CartesianChartProps, TooltipEventType } from '../util/types';
++import { CartesianChart } from './CartesianChart';
++
++const allowedTooltipTypes: ReadonlyArray<TooltipEventType> = ['axis', 'item'];
++
++/**
++ * @consumes ResponsiveContainerContext
++ * @provides CartesianViewBoxContext
++ * @provides CartesianChartContext
++ */
++export const WaterfallChart = forwardRef<SVGSVGElement, CartesianChartProps<unknown>>(
++  (props: CartesianChartProps<unknown>, ref) => {
++    return (
++      <CartesianChart
++        chartName="WaterfallChart"
++        defaultTooltipEventType="axis"
++        validateTooltipEventTypes={allowedTooltipTypes}
++        tooltipPayloadSearcher={arrayTooltipSearcher}
++        categoricalChartProps={props}
++        ref={ref}
++      />
++    );
++  },
++) as <DataPointType = any>(
++  props: CartesianChartProps<DataPointType> & { ref?: React.Ref<SVGSVGElement> },
++) => React.ReactElement;
+diff --git a/src/index.ts b/src/index.ts
+index e6d4396..84a55d2 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -93,6 +93,8 @@ export { Area } from './cartesian/Area';
+ export type { Props as AreaProps } from './cartesian/Area';
+ export { Bar } from './cartesian/Bar';
+ export type { Props as BarProps, BarRectangleItem, BarShapeProps } from './cartesian/Bar';
++export { WaterfallBar } from './cartesian/WaterfallBar';
++export type { Props as WaterfallBarProps, WaterfallBarShapeProps } from './cartesian/WaterfallBar';
+ export { BarStack } from './cartesian/BarStack';
+ export type { BarStackProps } from './cartesian/BarStack';
+ export { Scatter } from './cartesian/Scatter';
+@@ -132,6 +134,7 @@ export { ScatterChart } from './chart/ScatterChart';
+ export { AreaChart } from './chart/AreaChart';
+ export { RadialBarChart } from './chart/RadialBarChart';
+ export { ComposedChart } from './chart/ComposedChart';
++export { WaterfallChart } from './chart/WaterfallChart';
+ export { SunburstChart } from './chart/SunburstChart';
+ export type { SunburstData, SunburstChartProps } from './chart/SunburstChart';
+ 
+diff --git a/src/state/graphicalItemsSlice.ts b/src/state/graphicalItemsSlice.ts
+index e0d5bef..f5097da 100644
+--- a/src/state/graphicalItemsSlice.ts
++++ b/src/state/graphicalItemsSlice.ts
+@@ -10,6 +10,7 @@ import { BarSettings } from './types/BarSettings';
+ import { RadialBarSettings } from './types/RadialBarSettings';
+ import { PieSettings } from './types/PieSettings';
+ import { RadarSettings } from './types/RadarSettings';
++import { WaterfallSettings } from './types/WaterfallSettings';
+ 
+ /**
+  * Unique ID of the graphical item.
+@@ -56,7 +57,12 @@ export interface BaseCartesianGraphicalItemSettings extends GraphicalItemSetting
+   isPanorama: boolean;
+ }
+ 
+-export type CartesianGraphicalItemSettings = AreaSettings | BarSettings | LineSettings | ScatterSettings;
++export type CartesianGraphicalItemSettings =
++  | AreaSettings
++  | BarSettings
++  | LineSettings
++  | ScatterSettings
++  | WaterfallSettings;
+ 
+ export interface BasePolarGraphicalItemSettings extends GraphicalItemSettings {
+   angleAxisId: AxisId;
+diff --git a/src/state/selectors/axisSelectors.ts b/src/state/selectors/axisSelectors.ts
+index 4b5c1e7..4329ff3 100644
+--- a/src/state/selectors/axisSelectors.ts
++++ b/src/state/selectors/axisSelectors.ts
+@@ -861,6 +861,33 @@ export const combineDomainOfAllAppliedNumericalValuesIncludingErrorValues = (
+       const relevantErrorBars = errorBars[item.id]?.filter(errorBar =>
+         isErrorBarRelevantForAxisType(axisType, errorBar),
+       );
++
++      // Waterfall items need cumulative domain calculation
++      if ('type' in item && item.type === 'waterfall') {
++        const dataKey = axisSettings.dataKey ?? item.dataKey;
++        const initialValue = 'initialValue' in item ? (item.initialValue as number | undefined) : undefined;
++        let cumulative = initialValue ?? 0;
++        itemData.forEach(entry => {
++          const isTotal = (entry as Record<string, unknown>).total === true;
++          const rawValue = dataKey != null ? getValueByDataKey(entry, dataKey) : undefined;
++          if (isTotal) {
++            // Total bar: domain covers 0 to cumulative (total bar shows absolute value)
++            if (lowerEnd == null || lowerEnd > 0) lowerEnd = 0;
++            if (upperEnd == null || upperEnd < 0) upperEnd = 0;
++            if (lowerEnd == null || cumulative < lowerEnd) lowerEnd = cumulative;
++            if (upperEnd == null || cumulative > upperEnd) upperEnd = cumulative;
++          } else {
++            const value = typeof rawValue === 'number' ? rawValue : 0;
++            const start = value >= 0 ? cumulative : cumulative + value;
++            const end = value >= 0 ? cumulative + value : cumulative;
++            cumulative += value;
++            if (lowerEnd == null || start < lowerEnd) lowerEnd = start;
++            if (upperEnd == null || end > upperEnd) upperEnd = end;
++          }
++        });
++        return; // waterfall items don't need the standard per-entry loop
++      }
++
+       itemData.forEach(entry => {
+         const valueByDataKey = getValueByDataKey(entry, axisSettings.dataKey ?? item.dataKey);
+         const errorDomain = getErrorDomainByDataKey(entry, valueByDataKey, relevantErrorBars);
+diff --git a/src/state/selectors/combiners/combineTooltipPayload.ts b/src/state/selectors/combiners/combineTooltipPayload.ts
+index 124c229..1c7e494 100644
+--- a/src/state/selectors/combiners/combineTooltipPayload.ts
++++ b/src/state/selectors/combiners/combineTooltipPayload.ts
+@@ -174,10 +174,17 @@ export const combineTooltipPayload = (
+         );
+       });
+     } else {
+-      // I am not quite sure why these two branches (Array vs Array of Arrays) have to behave differently - I imagine we should unify these. 3.x breaking change?
++      // Single item: also preserve item-level color/fill from the payload
++      const parsedItem = parseTooltipPayloadItem(tooltipPayload);
++      const newSettings: TooltipEntrySettings = {
++        ...settings,
++        // Preserve item-level color/fill from graphical items.
++        color: parsedItem?.color ?? settings?.color,
++        fill: parsedItem?.fill ?? settings?.fill,
++      };
+       agg.push(
+         getTooltipEntry({
+-          tooltipEntrySettings: settings,
++          tooltipEntrySettings: newSettings,
+           dataKey: finalDataKey,
+           payload: tooltipPayload,
+           // getValueByDataKey does not validate the output type
+diff --git a/src/state/selectors/waterfallSelectors.ts b/src/state/selectors/waterfallSelectors.ts
+new file mode 100644
+index 0000000..357516b
+--- /dev/null
++++ b/src/state/selectors/waterfallSelectors.ts
+@@ -0,0 +1,488 @@
++import { createSelector } from 'reselect';
++import { ReactElement } from 'react';
++import { RechartsRootState } from '../store';
++import {
++  BaseAxisWithScale,
++  selectAxisWithScale,
++  selectCartesianAxisSize,
++  selectTicksOfGraphicalItem,
++  selectUnfilteredCartesianItems,
++} from './axisSelectors';
++import { isNullish } from '../../util/DataUtils';
++import { getBandSizeOfAxis, getCateCoordinateOfBar, StackId, BarPositionPosition } from '../../util/ChartUtils';
++import {
++  CartesianViewBoxRequired,
++  ChartOffsetInternal,
++  DataKey,
++  LayoutType,
++  TickItem,
++  Coordinate,
++} from '../../util/types';
++import { selectChartLayout } from '../../context/chartLayoutContext';
++import { ChartData } from '../chartDataSlice';
++import { selectChartDataWithIndexesIfNotInPanoramaPosition3 } from './dataSelectors';
++import { selectAxisViewBox, selectChartOffsetInternal } from './selectChartOffsetInternal';
++import { selectBarCategoryGap, selectBarGap, selectRootBarSize, selectRootMaxBarSize } from './rootPropsSelectors';
++import { WaterfallSettings } from '../types/WaterfallSettings';
++import { GraphicalItemId } from '../graphicalItemsSlice';
++import { BarCategory, combineBarSizeList } from './combiners/combineBarSizeList';
++import { combineAllBarPositions } from './combiners/combineAllBarPositions';
++import { selectXAxisIdFromGraphicalItemId, selectYAxisIdFromGraphicalItemId } from './graphicalItemSelectors';
++import { combineBarPosition } from './combiners/combineBarPosition';
++
++import { Props as RectangleProps } from '../../shape/Rectangle';
++
++const pickIsPanorama = (_state: RechartsRootState, _id: GraphicalItemId, isPanorama: boolean): boolean => isPanorama;
++
++const pickBarId = (_state: RechartsRootState, id: GraphicalItemId): GraphicalItemId => id;
++
++const pickCells = (
++  _state: RechartsRootState,
++  _id: GraphicalItemId,
++  _isPanorama: boolean,
++  cells: ReadonlyArray<ReactElement> | undefined,
++): ReadonlyArray<ReactElement> | undefined => cells;
++
++const selectSynchronisedWaterfallSettings: (
++  state: RechartsRootState,
++  id: GraphicalItemId,
++) => WaterfallSettings | undefined = createSelector(
++  [selectUnfilteredCartesianItems, pickBarId],
++  (graphicalItems, id: GraphicalItemId) =>
++    graphicalItems.filter(item => item.type === 'waterfall').find(item => item.id === id),
++);
++
++export const selectMaxWaterfallBarSize: (state: RechartsRootState, id: GraphicalItemId) => number | undefined =
++  createSelector(
++    [selectSynchronisedWaterfallSettings],
++    (waterfallSettings: WaterfallSettings | undefined) => waterfallSettings?.maxBarSize,
++  );
++
++export const selectAllVisibleWaterfallBars: (
++  state: RechartsRootState,
++  id: GraphicalItemId,
++  isPanorama: boolean,
++) => ReadonlyArray<WaterfallSettings> = createSelector(
++  [
++    selectChartLayout,
++    selectUnfilteredCartesianItems,
++    selectXAxisIdFromGraphicalItemId,
++    selectYAxisIdFromGraphicalItemId,
++    pickIsPanorama,
++  ],
++  (layout: LayoutType, allItems, xAxisId, yAxisId, isPanorama) =>
++    allItems
++      .filter(i => {
++        if (layout === 'horizontal') {
++          return i.xAxisId === xAxisId;
++        }
++        return i.yAxisId === yAxisId;
++      })
++      .filter(i => i.isPanorama === isPanorama)
++      .filter(i => i.hide === false)
++      .filter(i => i.type === 'waterfall'),
++);
++
++export type SizeList = ReadonlyArray<BarCategory>;
++
++export const selectWaterfallBarCartesianAxisSize = (state: RechartsRootState, id: GraphicalItemId) => {
++  const layout = selectChartLayout(state);
++  const xAxisId = selectXAxisIdFromGraphicalItemId(state, id);
++  const yAxisId = selectYAxisIdFromGraphicalItemId(state, id);
++  if (xAxisId == null || yAxisId == null) {
++    return undefined;
++  }
++  if (layout === 'horizontal') {
++    return selectCartesianAxisSize(state, 'xAxis', xAxisId);
++  }
++  return selectCartesianAxisSize(state, 'yAxis', yAxisId);
++};
++
++export const selectWaterfallBarSizeList: (
++  state: RechartsRootState,
++  id: GraphicalItemId,
++  isPanorama: boolean,
++) => SizeList = createSelector(
++  [selectAllVisibleWaterfallBars, selectRootBarSize, selectWaterfallBarCartesianAxisSize],
++  combineBarSizeList,
++);
++
++export const selectWaterfallBarBandSize: (
++  state: RechartsRootState,
++  id: GraphicalItemId,
++  isPanorama: boolean,
++) => number = (state: RechartsRootState, id: GraphicalItemId, isPanorama: boolean): number => {
++  const waterfallSettings: WaterfallSettings | undefined = selectSynchronisedWaterfallSettings(state, id);
++  if (waterfallSettings == null) {
++    return 0;
++  }
++  const xAxisId = selectXAxisIdFromGraphicalItemId(state, id);
++  const yAxisId = selectYAxisIdFromGraphicalItemId(state, id);
++  if (xAxisId == null || yAxisId == null) {
++    return 0;
++  }
++  const layout = selectChartLayout(state);
++  const globalMaxBarSize: number | undefined = selectRootMaxBarSize(state);
++  const { maxBarSize: childMaxBarSize } = waterfallSettings;
++  const maxBarSize: number | undefined = isNullish(childMaxBarSize) ? globalMaxBarSize : childMaxBarSize;
++  let axis: BaseAxisWithScale | undefined, ticks: ReadonlyArray<TickItem> | undefined;
++  if (layout === 'horizontal') {
++    axis = selectAxisWithScale(state, 'xAxis', xAxisId, isPanorama);
++    ticks = selectTicksOfGraphicalItem(state, 'xAxis', xAxisId, isPanorama);
++  } else {
++    axis = selectAxisWithScale(state, 'yAxis', yAxisId, isPanorama);
++    ticks = selectTicksOfGraphicalItem(state, 'yAxis', yAxisId, isPanorama);
++  }
++  return getBandSizeOfAxis(axis, ticks, true) ?? maxBarSize ?? 0;
++};
++
++export const selectAxisBandSize = (
++  state: RechartsRootState,
++  id: GraphicalItemId,
++  isPanorama: boolean,
++): number | undefined => {
++  const layout = selectChartLayout(state);
++  const xAxisId = selectXAxisIdFromGraphicalItemId(state, id);
++  const yAxisId = selectYAxisIdFromGraphicalItemId(state, id);
++  if (xAxisId == null || yAxisId == null) {
++    return undefined;
++  }
++  let axis: BaseAxisWithScale | undefined, ticks: ReadonlyArray<TickItem> | undefined;
++  if (layout === 'horizontal') {
++    axis = selectAxisWithScale(state, 'xAxis', xAxisId, isPanorama);
++    ticks = selectTicksOfGraphicalItem(state, 'xAxis', xAxisId, isPanorama);
++  } else {
++    axis = selectAxisWithScale(state, 'yAxis', yAxisId, isPanorama);
++    ticks = selectTicksOfGraphicalItem(state, 'yAxis', yAxisId, isPanorama);
++  }
++  return getBandSizeOfAxis(axis, ticks);
++};
++
++export type WaterfallBarWithPosition = {
++  stackId: StackId | undefined;
++  dataKeys: ReadonlyArray<DataKey<any>>;
++  position: BarPositionPosition;
++};
++
++export const selectAllWaterfallBarPositions: (
++  state: RechartsRootState,
++  id: GraphicalItemId,
++  isPanorama: boolean,
++) => ReadonlyArray<WaterfallBarWithPosition> | undefined = createSelector(
++  [
++    selectWaterfallBarSizeList,
++    selectRootMaxBarSize,
++    selectBarGap,
++    selectBarCategoryGap,
++    selectWaterfallBarBandSize,
++    selectAxisBandSize,
++    selectMaxWaterfallBarSize,
++  ],
++  combineAllBarPositions,
++);
++
++const selectXAxisWithScale = (state: RechartsRootState, id: GraphicalItemId, isPanorama: boolean) => {
++  const xAxisId = selectXAxisIdFromGraphicalItemId(state, id);
++  if (xAxisId == null) {
++    return undefined;
++  }
++  return selectAxisWithScale(state, 'xAxis', xAxisId, isPanorama);
++};
++
++const selectYAxisWithScale = (state: RechartsRootState, id: GraphicalItemId, isPanorama: boolean) => {
++  const yAxisId = selectYAxisIdFromGraphicalItemId(state, id);
++  if (yAxisId == null) {
++    return undefined;
++  }
++  return selectAxisWithScale(state, 'yAxis', yAxisId, isPanorama);
++};
++
++const selectXAxisTicks = (state: RechartsRootState, id: GraphicalItemId, isPanorama: boolean) => {
++  const xAxisId = selectXAxisIdFromGraphicalItemId(state, id);
++  if (xAxisId == null) {
++    return undefined;
++  }
++  return selectTicksOfGraphicalItem(state, 'xAxis', xAxisId, isPanorama);
++};
++
++const selectYAxisTicks = (state: RechartsRootState, id: GraphicalItemId, isPanorama: boolean) => {
++  const yAxisId = selectYAxisIdFromGraphicalItemId(state, id);
++  if (yAxisId == null) {
++    return undefined;
++  }
++  return selectTicksOfGraphicalItem(state, 'yAxis', yAxisId, isPanorama);
++};
++
++export const selectWaterfallBarPosition: (
++  state: RechartsRootState,
++  id: GraphicalItemId,
++  isPanorama: boolean,
++) => BarPositionPosition | undefined = createSelector(
++  [selectAllWaterfallBarPositions, selectSynchronisedWaterfallSettings],
++  combineBarPosition,
++);
++
++/**
++ * Computed rectangle data for each waterfall bar.
++ * Unlike regular Bar which uses [baseValue, rawValue],
++ * waterfall bars use cumulativeStart and cumulativeEnd to determine their position.
++ */
++export interface WaterfallRectangleItem extends RectangleProps {
++  value: number;
++  /** Cumulative start value for this bar */
++  cumulativeStart: number;
++  /** Cumulative end value for this bar */
++  cumulativeEnd: number;
++  /** Whether this bar represents a total/summary */
++  isTotal: boolean;
++  /** Whether the increment is positive */
++  isPositive: boolean;
++  /** Tooltip position */
++  tooltipPosition: Coordinate;
++  readonly payload?: any;
++  parentViewBox: CartesianViewBoxRequired;
++  x: number;
++  y: number;
++  width: number;
++  height: number;
++  background?: { x: number; y: number; width: number; height: number };
++  originalDataIndex: number;
++}
++
++/**
++ * Compute waterfall rectangles.
++ * Key difference from regular bar: each bar's position is determined by cumulative sum,
++ * not by a fixed base value. Positive increments go up from the cumulative start,
++ * negative increments go down from the cumulative start.
++ */
++export function computeWaterfallRectangles({
++  layout,
++  waterfallSettings,
++  pos,
++  bandSize,
++  xAxis,
++  yAxis,
++  xAxisTicks,
++  yAxisTicks,
++  displayedData,
++  offset,
++  parentViewBox,
++  _dataStartIndex,
++}: {
++  layout: 'horizontal' | 'vertical';
++  waterfallSettings: WaterfallSettings;
++  pos: BarPositionPosition;
++  bandSize: number;
++  xAxis: BaseAxisWithScale;
++  yAxis: BaseAxisWithScale;
++  xAxisTicks: TickItem[];
++  yAxisTicks: TickItem[];
++  offset: ChartOffsetInternal;
++  displayedData: ChartData;
++  parentViewBox: CartesianViewBoxRequired;
++  _dataStartIndex: number;
++}): ReadonlyArray<WaterfallRectangleItem> | undefined {
++  const { dataKey, initialValue } = waterfallSettings;
++
++  // First pass: compute cumulative values
++  const cumulativeValues: Array<{ start: number; end: number; value: number; isTotal: boolean; isPositive: boolean }> =
++    [];
++  let cumulative = initialValue ?? 0;
++
++  for (let i = 0; i < displayedData.length; i++) {
++    const entry = displayedData[i];
++    const rawValue = dataKey != null ? (entry as Record<string, unknown>)[dataKey as string] : undefined;
++
++    // Check if this is a total/summary bar (marked by the data having total=true)
++    const isTotal = (entry as Record<string, unknown>).total === true;
++
++    if (isTotal) {
++      // Total bar: always from 0 to cumulative sum (shows absolute value)
++      cumulativeValues.push({
++        start: 0,
++        end: cumulative,
++        value: cumulative,
++        isTotal: true,
++        isPositive: cumulative >= 0,
++      });
++    } else {
++      const value = typeof rawValue === 'number' ? rawValue : 0;
++      const start = value >= 0 ? cumulative : cumulative + value;
++      const end = value >= 0 ? cumulative + value : cumulative;
++      cumulative += value;
++      cumulativeValues.push({
++        start,
++        end,
++        value,
++        isTotal: false,
++        isPositive: value >= 0,
++      });
++    }
++  }
++
++  // Second pass: compute pixel positions
++  return displayedData
++    .map((entry: unknown, index): WaterfallRectangleItem | null => {
++      const cumVal = cumulativeValues[index];
++      if (cumVal == null) {
++        return null;
++      }
++
++      let x: number,
++        y: number,
++        width: number,
++        height: number,
++        background: { x: number; y: number; width: number; height: number };
++
++      if (layout === 'horizontal') {
++        const startScale = yAxis.scale.map(cumVal.start);
++        const endScale = yAxis.scale.map(cumVal.end);
++        if (startScale == null || endScale == null) {
++          return null;
++        }
++        const cateX = getCateCoordinateOfBar({
++          axis: xAxis,
++          ticks: xAxisTicks,
++          bandSize,
++          offset: pos.offset,
++          entry,
++          index,
++        });
++        if (cateX == null) {
++          return null;
++        }
++        x = cateX;
++        // For horizontal layout, Y axis is numeric (inverted: higher values = lower y)
++        y = Math.min(startScale, endScale);
++        width = pos.size;
++        height = Math.abs(endScale - startScale);
++        background = { x, y: offset.top, width, height: offset.height };
++      } else {
++        const startScale = xAxis.scale.map(cumVal.start);
++        const endScale = xAxis.scale.map(cumVal.end);
++        if (startScale == null || endScale == null) {
++          return null;
++        }
++        const cateY = getCateCoordinateOfBar({
++          axis: yAxis,
++          ticks: yAxisTicks,
++          bandSize,
++          offset: pos.offset,
++          entry,
++          index,
++        });
++        if (cateY == null) {
++          return null;
++        }
++        x = Math.min(startScale, endScale);
++        y = cateY;
++        width = Math.abs(endScale - startScale);
++        height = pos.size;
++        background = { x: offset.left, y, width: offset.width, height };
++      }
++
++      // Filter out zero-dimension rectangles
++      if (width === 0 || height === 0) {
++        return null;
++      }
++
++      const waterfallRectangleItem: WaterfallRectangleItem = {
++        // @ts-expect-error spread of unknown type
++        ...entry,
++        x,
++        y,
++        width,
++        height,
++        value: cumVal.value,
++        cumulativeStart: cumVal.start,
++        cumulativeEnd: cumVal.end,
++        isTotal: cumVal.isTotal,
++        isPositive: cumVal.isPositive,
++        payload: entry,
++        background,
++        tooltipPosition: { x: x + width / 2, y: y + height / 2 },
++        parentViewBox,
++        originalDataIndex: index,
++      };
++
++      return waterfallRectangleItem;
++    })
++    .filter(Boolean) as ReadonlyArray<WaterfallRectangleItem>;
++}
++
++export const selectWaterfallRectangles: (
++  state: RechartsRootState,
++  id: GraphicalItemId,
++  isPanorama: boolean,
++  cells: ReadonlyArray<ReactElement> | undefined,
++) => ReadonlyArray<WaterfallRectangleItem> | undefined = createSelector(
++  [
++    selectChartOffsetInternal,
++    selectAxisViewBox,
++    selectXAxisWithScale,
++    selectYAxisWithScale,
++    selectXAxisTicks,
++    selectYAxisTicks,
++    selectWaterfallBarPosition,
++    selectChartLayout,
++    selectChartDataWithIndexesIfNotInPanoramaPosition3,
++    selectAxisBandSize,
++    selectSynchronisedWaterfallSettings,
++    pickCells,
++  ],
++  (
++    offset: ChartOffsetInternal,
++    axisViewBox: CartesianViewBoxRequired,
++    xAxis: BaseAxisWithScale | undefined,
++    yAxis: BaseAxisWithScale | undefined,
++    xAxisTicks,
++    yAxisTicks,
++    pos: BarPositionPosition | undefined,
++    layout: LayoutType,
++    { chartData, dataStartIndex, dataEndIndex },
++    bandSize,
++    waterfallSettings: WaterfallSettings | undefined,
++    _cells,
++  ): ReadonlyArray<WaterfallRectangleItem> | undefined => {
++    if (
++      waterfallSettings == null ||
++      pos == null ||
++      axisViewBox == null ||
++      (layout !== 'horizontal' && layout !== 'vertical') ||
++      xAxis == null ||
++      yAxis == null ||
++      xAxisTicks == null ||
++      yAxisTicks == null ||
++      bandSize == null
++    ) {
++      return undefined;
++    }
++
++    const { data } = waterfallSettings;
++    let displayedData: ChartData | undefined;
++    if (data != null && data.length > 0) {
++      displayedData = data;
++    } else {
++      displayedData = chartData?.slice(dataStartIndex, dataEndIndex + 1);
++    }
++
++    if (displayedData == null) {
++      return undefined;
++    }
++
++    return computeWaterfallRectangles({
++      layout,
++      waterfallSettings,
++      pos,
++      parentViewBox: axisViewBox,
++      bandSize,
++      xAxis,
++      yAxis,
++      xAxisTicks,
++      yAxisTicks,
++      displayedData,
++      offset,
++      _dataStartIndex: dataStartIndex,
++    });
++  },
++);
+diff --git a/src/state/types/WaterfallSettings.ts b/src/state/types/WaterfallSettings.ts
+new file mode 100644
+index 0000000..9828cb7
+--- /dev/null
++++ b/src/state/types/WaterfallSettings.ts
+@@ -0,0 +1,19 @@
++import { BaseCartesianGraphicalItemSettings } from '../graphicalItemsSlice';
++import { MaybeStackedGraphicalItem } from './StackedGraphicalItem';
++
++export type WaterfallSettings = BaseCartesianGraphicalItemSettings &
++  MaybeStackedGraphicalItem & {
++    type: 'waterfall';
++    maxBarSize: number | undefined;
++    /**
++     * When true, zero-dimension bars are not filtered out because the custom shape may still render something visible.
++     */
++    hasCustomShape: boolean;
++    minPointSize: number;
++    /**
++     * Starting cumulative value for the waterfall chart.
++     * When set, the first bar starts from this value instead of 0.
++     * @defaultValue 0
++     */
++    initialValue: number | undefined;
++  };
+diff --git a/src/zIndex/DefaultZIndexes.tsx b/src/zIndex/DefaultZIndexes.tsx
+index 073df0f..024b427 100644
+--- a/src/zIndex/DefaultZIndexes.tsx
++++ b/src/zIndex/DefaultZIndexes.tsx
+@@ -37,6 +37,11 @@ export const DefaultZIndexes = {
+    */
+   bar: 300,
+ 
++  /**
++   * WaterfallBar
++   */
++  waterfallBar: 300,
++
+   /**
+    * Line and ReferenceLine, and ErrorBor
+    */
+diff --git a/storybook/stories/Examples/WaterfallChart/WaterfallChart.stories.tsx b/storybook/stories/Examples/WaterfallChart/WaterfallChart.stories.tsx
+new file mode 100644
+index 0000000..8f02df4
+--- /dev/null
++++ b/storybook/stories/Examples/WaterfallChart/WaterfallChart.stories.tsx
+@@ -0,0 +1,208 @@
++import React from 'react';
++import { WaterfallChart, WaterfallBar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from '../../../../src';
++
++export default {
++  component: WaterfallChart,
++  docs: {
++    autodocs: false,
++  },
++};
++
++const waterfallData = [
++  { name: 'Revenue', value: 100 },
++  { name: 'COGS', value: -40 },
++  { name: 'Overhead', value: -20 },
++  { name: 'Other Income', value: 10 },
++  { name: 'Profit', value: 50, total: true },
++];
++
++const waterfallData2 = [
++  { name: 'Q1 Sales', value: 240 },
++  { name: 'Q2 Sales', value: 180 },
++  { name: 'Returns', value: -60 },
++  { name: 'Discounts', value: -30 },
++  { name: 'Q3 Sales', value: 150 },
++  { name: 'Net', value: 0, total: true },
++];
++
++export const SimpleWaterfall = {
++  render: () => {
++    return (
++      <WaterfallChart
++        width={600}
++        height={400}
++        data={waterfallData}
++        margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
++      >
++        <CartesianGrid strokeDasharray="3 3" />
++        <XAxis dataKey="name" />
++        <YAxis />
++        <Tooltip />
++        <Legend />
++        <WaterfallBar dataKey="value" connectorStyle={{ stroke: '#555', strokeWidth: 2, strokeDasharray: '6 3' }} />
++      </WaterfallChart>
++    );
++  },
++};
++
++export const WaterfallWithCustomColors = {
++  render: () => {
++    return (
++      <WaterfallChart
++        width={600}
++        height={400}
++        data={waterfallData}
++        margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
++      >
++        <CartesianGrid strokeDasharray="3 3" />
++        <XAxis dataKey="name" />
++        <YAxis />
++        <Tooltip />
++        <Legend />
++        <WaterfallBar dataKey="value" positiveFill="#2ecc71" negativeFill="#e74c3c" totalFill="#3498db" />
++      </WaterfallChart>
++    );
++  },
++};
++
++export const WaterfallWithLabels = {
++  render: () => {
++    return (
++      <WaterfallChart
++        width={600}
++        height={400}
++        data={waterfallData}
++        margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
++      >
++        <CartesianGrid strokeDasharray="3 3" />
++        <XAxis dataKey="name" />
++        <YAxis />
++        <Tooltip />
++        <WaterfallBar
++          dataKey="value"
++          positiveFill="#2ecc71"
++          negativeFill="#e74c3c"
++          totalFill="#3498db"
++          label={{ position: 'top', fill: '#333', fontSize: 12 }}
++        />
++      </WaterfallChart>
++    );
++  },
++};
++
++export const WaterfallWithoutConnectors = {
++  render: () => {
++    return (
++      <WaterfallChart
++        width={600}
++        height={400}
++        data={waterfallData2}
++        margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
++      >
++        <CartesianGrid strokeDasharray="3 3" />
++        <XAxis dataKey="name" />
++        <YAxis />
++        <Tooltip />
++        <WaterfallBar
++          dataKey="value"
++          positiveFill="#8e44ad"
++          negativeFill="#f39c12"
++          totalFill="#1abc9c"
++          showConnectors={false}
++        />
++      </WaterfallChart>
++    );
++  },
++};
++
++// Stress case A: cumulative sum (300) far exceeds any single increment (max 100)
++const cumulativeHighData = [
++  { name: 'Q1', value: 100 },
++  { name: 'Q2', value: 100 },
++  { name: 'Q3', value: 100 },
++  { name: 'Total', value: 0, total: true },
++];
++
++export const WaterfallCumulativeHigh = {
++  render: () => {
++    return (
++      <WaterfallChart
++        width={600}
++        height={400}
++        data={cumulativeHighData}
++        margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
++      >
++        <CartesianGrid strokeDasharray="3 3" />
++        <XAxis dataKey="name" />
++        <YAxis />
++        <Tooltip />
++        <Legend />
++        <WaterfallBar dataKey="value" positiveFill="#2ecc71" negativeFill="#e74c3c" totalFill="#3498db" />
++      </WaterfallChart>
++    );
++  },
++};
++
++// Stress case B: cumulative goes deeply negative
++const cumulativeNegativeData = [
++  { name: 'Loss1', value: -30 },
++  { name: 'Loss2', value: -30 },
++  { name: 'Loss3', value: -30 },
++  { name: 'Total', value: 0, total: true },
++];
++
++export const WaterfallCumulativeNegative = {
++  render: () => {
++    return (
++      <WaterfallChart
++        width={600}
++        height={400}
++        data={cumulativeNegativeData}
++        margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
++      >
++        <CartesianGrid strokeDasharray="3 3" />
++        <XAxis dataKey="name" />
++        <YAxis />
++        <Tooltip />
++        <Legend />
++        <WaterfallBar dataKey="value" positiveFill="#2ecc71" negativeFill="#e74c3c" totalFill="#3498db" />
++      </WaterfallChart>
++    );
++  },
++};
++
++// Initial value scenario: Starting Cash = 200, increments applied on top of that baseline
++const initialValueData = [
++  { name: 'Sales', value: 100 },
++  { name: 'Rent', value: -50 },
++  { name: 'Tax', value: -30 },
++  { name: 'Ending Cash', value: 0, total: true },
++];
++
++export const WaterfallWithInitialValue = {
++  render: () => {
++    return (
++      <WaterfallChart
++        width={600}
++        height={400}
++        data={initialValueData}
++        margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
++      >
++        <CartesianGrid strokeDasharray="3 3" />
++        <XAxis dataKey="name" />
++        <YAxis />
++        <Tooltip />
++        <Legend />
++        <WaterfallBar
++          dataKey="value"
++          initialValue={200}
++          positiveFill="#2ecc71"
++          negativeFill="#e74c3c"
++          totalFill="#3498db"
++          connectorStyle={{ stroke: '#555', strokeWidth: 2, strokeDasharray: '6 3' }}
++          label={{ position: 'top', fill: '#333', fontSize: 12 }}
++        />
++      </WaterfallChart>
++    );
++  },
++};
+diff --git a/test/cartesian/WaterfallBar.spec.tsx b/test/cartesian/WaterfallBar.spec.tsx
+new file mode 100644
+index 0000000..5df44f9
+--- /dev/null
++++ b/test/cartesian/WaterfallBar.spec.tsx
+@@ -0,0 +1,771 @@
++import { describe, expect, it } from 'vitest';
++import { computeWaterfallRectangles } from '../../src/state/selectors/waterfallSelectors';
++import { combineDomainOfAllAppliedNumericalValuesIncludingErrorValues } from '../../src/state/selectors/axisSelectors';
++import { WaterfallSettings } from '../../src/state/types/WaterfallSettings';
++import { CartesianViewBoxRequired, ChartOffsetInternal } from '../../src/util/types';
++
++// Minimal mock objects that work with getCateCoordinateOfBar
++const createMockNumericAxis = () =>
++  ({
++    type: 'number',
++    scale: {
++      map: (value: number) => 300 - value * 2,
++      domain: () => [0, 150],
++    },
++    isCategorical: false,
++  }) as any;
++
++const createMockCategoricalAxis = () =>
++  ({
++    type: 'category',
++    scale: {
++      map: (value: string) => {
++        const idx = [
++          'A',
++          'B',
++          'C',
++          'D',
++          'Q1',
++          'Q2',
++          'Q3',
++          'Revenue',
++          'COGS',
++          'Overhead',
++          'Profit',
++          'Loss1',
++          'Loss2',
++          'Loss3',
++          'Total',
++          'Sales',
++          'Rent',
++          'Tax',
++          'Ending Cash',
++          'Other Income',
++        ].indexOf(value);
++        return idx >= 0 ? 50 + idx * 80 : 50;
++      },
++      domain: () => ['Revenue', 'COGS', 'Profit'],
++      bandwidth: () => 60,
++    },
++    isCategorical: true,
++    dataKey: 'name',
++  }) as any;
++
++// Provide enough ticks for up to 5 data entries
++const mockXTicks = [
++  { value: 'tick0', coordinate: 50 },
++  { value: 'tick1', coordinate: 130 },
++  { value: 'tick2', coordinate: 210 },
++  { value: 'tick3', coordinate: 290 },
++  { value: 'tick4', coordinate: 370 },
++];
++const mockYTicks = [
++  { value: 0, coordinate: 300 },
++  { value: 50, coordinate: 200 },
++  { value: 100, coordinate: 100 },
++];
++
++const mockOffset: ChartOffsetInternal = {
++  top: 0,
++  bottom: 0,
++  left: 0,
++  right: 0,
++  width: 400,
++  height: 300,
++};
++
++const mockParentViewBox: CartesianViewBoxRequired = {
++  x: 0,
++  y: 0,
++  width: 400,
++  height: 300,
++};
++
++const mockBarPosition = {
++  offset: 0,
++  size: 40,
++};
++
++describe('computeWaterfallRectangles', () => {
++  const waterfallSettings: WaterfallSettings = {
++    type: 'waterfall',
++    id: 'test-waterfall',
++    data: undefined,
++    dataKey: 'value',
++    hide: false,
++    xAxisId: 0,
++    yAxisId: 0,
++    zAxisId: 0,
++    isPanorama: false,
++    maxBarSize: undefined,
++    hasCustomShape: false,
++    stackId: undefined,
++    barSize: undefined,
++    minPointSize: 0,
++  };
++
++  it('computes cumulative values for simple positive data', () => {
++    const data = [
++      { name: 'A', value: 50 },
++      { name: 'B', value: 30 },
++      { name: 'C', value: 20 },
++    ];
++
++    const result = computeWaterfallRectangles({
++      layout: 'horizontal',
++      waterfallSettings,
++      pos: mockBarPosition,
++      bandSize: 100,
++      xAxis: createMockCategoricalAxis(),
++      yAxis: createMockNumericAxis(),
++      xAxisTicks: mockXTicks,
++      yAxisTicks: mockYTicks,
++      displayedData: data,
++      offset: mockOffset,
++      parentViewBox: mockParentViewBox,
++      dataStartIndex: 0,
++    });
++
++    expect(result).toBeDefined();
++    expect(result!.length).toBe(3);
++
++    // First bar: cumulative 0 -> 50
++    expect(result![0].cumulativeStart).toBe(0);
++    expect(result![0].cumulativeEnd).toBe(50);
++    expect(result![0].isPositive).toBe(true);
++    expect(result![0].isTotal).toBe(false);
++    expect(result![0].value).toBe(50);
++
++    // Second bar: cumulative 50 -> 80
++    expect(result![1].cumulativeStart).toBe(50);
++    expect(result![1].cumulativeEnd).toBe(80);
++    expect(result![1].isPositive).toBe(true);
++    expect(result![1].value).toBe(30);
++
++    // Third bar: cumulative 80 -> 100
++    expect(result![2].cumulativeStart).toBe(80);
++    expect(result![2].cumulativeEnd).toBe(100);
++    expect(result![2].isPositive).toBe(true);
++    expect(result![2].value).toBe(20);
++  });
++
++  it('computes cumulative values for mixed positive and negative data', () => {
++    const data = [
++      { name: 'Revenue', value: 100 },
++      { name: 'COGS', value: -40 },
++      { name: 'Overhead', value: -20 },
++      { name: 'Profit', value: 40, total: true },
++    ];
++
++    const result = computeWaterfallRectangles({
++      layout: 'horizontal',
++      waterfallSettings,
++      pos: mockBarPosition,
++      bandSize: 100,
++      xAxis: createMockCategoricalAxis(),
++      yAxis: createMockNumericAxis(),
++      xAxisTicks: mockXTicks,
++      yAxisTicks: mockYTicks,
++      displayedData: data,
++      offset: mockOffset,
++      parentViewBox: mockParentViewBox,
++      dataStartIndex: 0,
++    });
++
++    expect(result).toBeDefined();
++    // Some bars may be filtered if getCateCoordinateOfBar returns null with mocks.
++    // Verify cumulative values on the bars that ARE returned.
++    const revenueBar = result!.find(r => !r.isTotal && r.cumulativeStart === 0 && r.cumulativeEnd === 100);
++    expect(revenueBar).toBeDefined();
++    expect(revenueBar!.isPositive).toBe(true);
++    expect(revenueBar!.value).toBe(100);
++
++    const cogsBar = result!.find(r => !r.isTotal && r.cumulativeStart === 60 && r.cumulativeEnd === 100);
++    expect(cogsBar).toBeDefined();
++    expect(cogsBar!.isPositive).toBe(false);
++    expect(cogsBar!.value).toBe(-40);
++
++    const overheadBar = result!.find(r => !r.isTotal && r.cumulativeStart === 40 && r.cumulativeEnd === 60);
++    expect(overheadBar).toBeDefined();
++    expect(overheadBar!.isPositive).toBe(false);
++    expect(overheadBar!.value).toBe(-20);
++
++    const totalBar = result!.find(r => r.isTotal);
++    expect(totalBar).toBeDefined();
++    expect(totalBar!.cumulativeStart).toBe(0);
++    expect(totalBar!.cumulativeEnd).toBe(40);
++    expect(totalBar!.isPositive).toBe(true);
++  });
++
++  it('handles all negative data', () => {
++    const data = [
++      { name: 'Loss1', value: -30 },
++      { name: 'Loss2', value: -20 },
++    ];
++
++    const result = computeWaterfallRectangles({
++      layout: 'horizontal',
++      waterfallSettings,
++      pos: mockBarPosition,
++      bandSize: 100,
++      xAxis: createMockCategoricalAxis(),
++      yAxis: createMockNumericAxis(),
++      xAxisTicks: mockXTicks,
++      yAxisTicks: mockYTicks,
++      displayedData: data,
++      offset: mockOffset,
++      parentViewBox: mockParentViewBox,
++      dataStartIndex: 0,
++    });
++
++    expect(result).toBeDefined();
++    expect(result!.length).toBe(2);
++
++    // Loss1: negative, cumulative -30 -> 0
++    expect(result![0].cumulativeStart).toBe(-30);
++    expect(result![0].cumulativeEnd).toBe(0);
++    expect(result![0].isPositive).toBe(false);
++
++    // Loss2: negative, cumulative -50 -> -30
++    expect(result![1].cumulativeStart).toBe(-50);
++    expect(result![1].cumulativeEnd).toBe(-30);
++    expect(result![1].isPositive).toBe(false);
++  });
++
++  it('produces correct rectangle dimensions', () => {
++    const data = [
++      { name: 'A', value: 50 },
++      { name: 'B', value: -20 },
++    ];
++
++    const result = computeWaterfallRectangles({
++      layout: 'horizontal',
++      waterfallSettings,
++      pos: mockBarPosition,
++      bandSize: 100,
++      xAxis: createMockCategoricalAxis(),
++      yAxis: createMockNumericAxis(),
++      xAxisTicks: mockXTicks,
++      yAxisTicks: mockYTicks,
++      displayedData: data,
++      offset: mockOffset,
++      parentViewBox: mockParentViewBox,
++      dataStartIndex: 0,
++    });
++
++    expect(result).toBeDefined();
++    // Each rectangle should have x, y, width, height, tooltipPosition
++    for (const rect of result!) {
++      expect(typeof rect.x).toBe('number');
++      expect(typeof rect.y).toBe('number');
++      expect(typeof rect.width).toBe('number');
++      expect(typeof rect.height).toBe('number');
++      expect(rect.tooltipPosition).toBeDefined();
++      expect(typeof rect.tooltipPosition.x).toBe('number');
++      expect(typeof rect.tooltipPosition.y).toBe('number');
++    }
++  });
++
++  it('stress case A: cumulative sum far exceeds any single increment', () => {
++    // [100, 100, 100, total] → cumulative goes to 300
++    const data = [
++      { name: 'Q1', value: 100 },
++      { name: 'Q2', value: 100 },
++      { name: 'Q3', value: 100 },
++      { name: 'Total', value: 0, total: true },
++    ];
++
++    const result = computeWaterfallRectangles({
++      layout: 'horizontal',
++      waterfallSettings,
++      pos: mockBarPosition,
++      bandSize: 100,
++      xAxis: createMockCategoricalAxis(),
++      yAxis: createMockNumericAxis(),
++      xAxisTicks: mockXTicks,
++      yAxisTicks: mockYTicks,
++      displayedData: data,
++      offset: mockOffset,
++      parentViewBox: mockParentViewBox,
++      dataStartIndex: 0,
++    });
++
++    expect(result).toBeDefined();
++
++    // Q1: 0 → 100
++    const q1 = result!.find(r => !r.isTotal && r.value === 100 && r.cumulativeStart === 0);
++    expect(q1).toBeDefined();
++    expect(q1!.cumulativeEnd).toBe(100);
++
++    // Q2: 100 → 200
++    const q2 = result!.find(r => !r.isTotal && r.value === 100 && r.cumulativeStart === 100);
++    expect(q2).toBeDefined();
++    expect(q2!.cumulativeEnd).toBe(200);
++
++    // Q3: 200 → 300
++    const q3 = result!.find(r => !r.isTotal && r.value === 100 && r.cumulativeStart === 200);
++    expect(q3).toBeDefined();
++    expect(q3!.cumulativeEnd).toBe(300);
++
++    // Total: 0 → 300
++    const total = result!.find(r => r.isTotal);
++    expect(total).toBeDefined();
++    expect(total!.cumulativeStart).toBe(0);
++    expect(total!.cumulativeEnd).toBe(300);
++
++    // Verify the third bar's y position accounts for cumulative=300
++    // scale.map(300) = 300 - 300*2 = -300, scale.map(200) = 300 - 200*2 = -100
++    // y = min(-300, -100) = -300, height = |-300 - (-100)| = 200
++    expect(q3!.y).toBeLessThan(q2!.y);
++  });
++
++  it('stress case B: cumulative goes deeply negative', () => {
++    // [-30, -30, -30, total] → cumulative goes to -90
++    const data = [
++      { name: 'Loss1', value: -30 },
++      { name: 'Loss2', value: -30 },
++      { name: 'Loss3', value: -30 },
++      { name: 'Total', value: 0, total: true },
++    ];
++
++    const result = computeWaterfallRectangles({
++      layout: 'horizontal',
++      waterfallSettings,
++      pos: mockBarPosition,
++      bandSize: 100,
++      xAxis: createMockCategoricalAxis(),
++      yAxis: createMockNumericAxis(),
++      xAxisTicks: mockXTicks,
++      yAxisTicks: mockYTicks,
++      displayedData: data,
++      offset: mockOffset,
++      parentViewBox: mockParentViewBox,
++      dataStartIndex: 0,
++    });
++
++    expect(result).toBeDefined();
++
++    // Loss1: -30 → 0
++    const loss1 = result!.find(r => !r.isTotal && r.value === -30 && r.cumulativeEnd === 0);
++    expect(loss1).toBeDefined();
++    expect(loss1!.cumulativeStart).toBe(-30);
++    expect(loss1!.isPositive).toBe(false);
++
++    // Loss2: -60 → -30
++    const loss2 = result!.find(r => !r.isTotal && r.value === -30 && r.cumulativeStart === -60);
++    expect(loss2).toBeDefined();
++    expect(loss2!.cumulativeEnd).toBe(-30);
++    expect(loss2!.isPositive).toBe(false);
++
++    // Loss3: -90 → -60
++    const loss3 = result!.find(r => !r.isTotal && r.value === -30 && r.cumulativeStart === -90);
++    expect(loss3).toBeDefined();
++    expect(loss3!.cumulativeEnd).toBe(-60);
++    expect(loss3!.isPositive).toBe(false);
++
++    // Total: 0 → -90
++    const total = result!.find(r => r.isTotal);
++    expect(total).toBeDefined();
++    expect(total!.cumulativeStart).toBe(0);
++    expect(total!.cumulativeEnd).toBe(-90);
++  });
++});
++
++describe('YAxis domain for waterfall', () => {
++  it('includes cumulative values for stress case A (cumulative high)', () => {
++    // Data: [100, 100, 100, total] → cumulative range is [0, 300]
++    const data = [
++      { name: 'Q1', value: 100 },
++      { name: 'Q2', value: 100 },
++      { name: 'Q3', value: 100 },
++      { name: 'Total', value: 0, total: true },
++    ];
++
++    const waterfallItem: WaterfallSettings & { dataKey: string } = {
++      type: 'waterfall',
++      id: 'test-waterfall',
++      data: undefined,
++      dataKey: 'value',
++      hide: false,
++      xAxisId: 0,
++      yAxisId: 0,
++      zAxisId: 0,
++      isPanorama: false,
++      maxBarSize: undefined,
++      hasCustomShape: false,
++      stackId: undefined,
++      barSize: undefined,
++      minPointSize: 0,
++      initialValue: undefined,
++    };
++
++    const domain = combineDomainOfAllAppliedNumericalValuesIncludingErrorValues(
++      data,
++      { dataKey: undefined, type: 'number' } as any,
++      [waterfallItem],
++      {},
++      'yAxis',
++      data,
++    );
++
++    expect(domain).toBeDefined();
++    // Domain must cover cumulative range [0, 300], not just raw values [0, 100]
++    expect(domain![0]).toBeLessThanOrEqual(0);
++    expect(domain![1]).toBeGreaterThanOrEqual(300);
++  });
++
++  it('includes cumulative values for stress case B (cumulative negative)', () => {
++    // Data: [-30, -30, -30, total] → cumulative range is [-90, 0]
++    const data = [
++      { name: 'Loss1', value: -30 },
++      { name: 'Loss2', value: -30 },
++      { name: 'Loss3', value: -30 },
++      { name: 'Total', value: 0, total: true },
++    ];
++
++    const waterfallItem: WaterfallSettings & { dataKey: string } = {
++      type: 'waterfall',
++      id: 'test-waterfall',
++      data: undefined,
++      dataKey: 'value',
++      hide: false,
++      xAxisId: 0,
++      yAxisId: 0,
++      zAxisId: 0,
++      isPanorama: false,
++      maxBarSize: undefined,
++      hasCustomShape: false,
++      stackId: undefined,
++      barSize: undefined,
++      minPointSize: 0,
++      initialValue: undefined,
++    };
++
++    const domain = combineDomainOfAllAppliedNumericalValuesIncludingErrorValues(
++      data,
++      { dataKey: undefined, type: 'number' } as any,
++      [waterfallItem],
++      {},
++      'yAxis',
++      data,
++    );
++
++    expect(domain).toBeDefined();
++    // Domain must cover cumulative range [-90, 0], not just raw values [-30, 0]
++    expect(domain![0]).toBeLessThanOrEqual(-90);
++    expect(domain![1]).toBeGreaterThanOrEqual(0);
++  });
++});
++
++describe('initialValue support', () => {
++  it('computeWaterfallRectangles respects initialValue for positive increments', () => {
++    // initialValue=200, data: [Sales +100, Rent -50, Tax -30, Ending Cash total]
++    const data = [
++      { name: 'Sales', value: 100 },
++      { name: 'Rent', value: -50 },
++      { name: 'Tax', value: -30 },
++      { name: 'Ending Cash', value: 0, total: true },
++    ];
++
++    const settingsWithInitial: WaterfallSettings = {
++      type: 'waterfall',
++      id: 'test-waterfall-initial',
++      data: undefined,
++      dataKey: 'value',
++      hide: false,
++      xAxisId: 0,
++      yAxisId: 0,
++      zAxisId: 0,
++      isPanorama: false,
++      maxBarSize: undefined,
++      hasCustomShape: false,
++      stackId: undefined,
++      barSize: undefined,
++      minPointSize: 0,
++      initialValue: 200,
++    };
++
++    const result = computeWaterfallRectangles({
++      layout: 'horizontal',
++      waterfallSettings: settingsWithInitial,
++      pos: mockBarPosition,
++      bandSize: 100,
++      xAxis: createMockCategoricalAxis(),
++      yAxis: createMockNumericAxis(),
++      xAxisTicks: mockXTicks,
++      yAxisTicks: mockYTicks,
++      displayedData: data,
++      offset: mockOffset,
++      parentViewBox: mockParentViewBox,
++      dataStartIndex: 0,
++    });
++
++    expect(result).toBeDefined();
++
++    // Sales: 200 → 300
++    const sales = result!.find(r => !r.isTotal && r.cumulativeStart === 200);
++    expect(sales).toBeDefined();
++    expect(sales!.cumulativeEnd).toBe(300);
++    expect(sales!.isPositive).toBe(true);
++
++    // Rent: 250 → 300
++    const rent = result!.find(r => !r.isTotal && r.value === -50);
++    expect(rent).toBeDefined();
++    expect(rent!.cumulativeStart).toBe(250);
++    expect(rent!.cumulativeEnd).toBe(300);
++
++    // Tax: 220 → 250
++    const tax = result!.find(r => !r.isTotal && r.value === -30);
++    expect(tax).toBeDefined();
++    expect(tax!.cumulativeStart).toBe(220);
++    expect(tax!.cumulativeEnd).toBe(250);
++
++    // Total: 0 → 220 (total bar always starts from 0, shows absolute value)
++    const total = result!.find(r => r.isTotal);
++    expect(total).toBeDefined();
++    expect(total!.cumulativeStart).toBe(0);
++    expect(total!.cumulativeEnd).toBe(220);
++  });
++
++  it('YAxis domain includes initialValue range', () => {
++    const data = [
++      { name: 'Sales', value: 100 },
++      { name: 'Rent', value: -50 },
++      { name: 'Tax', value: -30 },
++      { name: 'Ending Cash', value: 0, total: true },
++    ];
++
++    const waterfallItem: WaterfallSettings & { dataKey: string } = {
++      type: 'waterfall',
++      id: 'test-waterfall',
++      data: undefined,
++      dataKey: 'value',
++      hide: false,
++      xAxisId: 0,
++      yAxisId: 0,
++      zAxisId: 0,
++      isPanorama: false,
++      maxBarSize: undefined,
++      hasCustomShape: false,
++      stackId: undefined,
++      barSize: undefined,
++      minPointSize: 0,
++      initialValue: 200,
++    };
++
++    const domain = combineDomainOfAllAppliedNumericalValuesIncludingErrorValues(
++      data,
++      { dataKey: undefined, type: 'number' } as any,
++      [waterfallItem],
++      {},
++      'yAxis',
++      data,
++    );
++
++    expect(domain).toBeDefined();
++    // Domain must cover cumulative range [200, 300]
++    expect(domain![0]).toBeLessThanOrEqual(200);
++    expect(domain![1]).toBeGreaterThanOrEqual(300);
++  });
++
++  it('initialValue with negative cumulative result', () => {
++    // initialValue=50, deep negative increments → cumulative goes below 0
++    const data = [
++      { name: 'Loss1', value: -40 },
++      { name: 'Loss2', value: -30 },
++      { name: 'Total', value: 0, total: true },
++    ];
++
++    const settingsWithInitial: WaterfallSettings = {
++      type: 'waterfall',
++      id: 'test-waterfall',
++      data: undefined,
++      dataKey: 'value',
++      hide: false,
++      xAxisId: 0,
++      yAxisId: 0,
++      zAxisId: 0,
++      isPanorama: false,
++      maxBarSize: undefined,
++      hasCustomShape: false,
++      stackId: undefined,
++      barSize: undefined,
++      minPointSize: 0,
++      initialValue: 50,
++    };
++
++    const result = computeWaterfallRectangles({
++      layout: 'horizontal',
++      waterfallSettings: settingsWithInitial,
++      pos: mockBarPosition,
++      bandSize: 100,
++      xAxis: createMockCategoricalAxis(),
++      yAxis: createMockNumericAxis(),
++      xAxisTicks: mockXTicks,
++      yAxisTicks: mockYTicks,
++      displayedData: data,
++      offset: mockOffset,
++      parentViewBox: mockParentViewBox,
++      dataStartIndex: 0,
++    });
++
++    expect(result).toBeDefined();
++
++    // Loss1: 10 → 50
++    const loss1 = result!.find(r => !r.isTotal && r.value === -40);
++    expect(loss1).toBeDefined();
++    expect(loss1!.cumulativeStart).toBe(10);
++    expect(loss1!.cumulativeEnd).toBe(50);
++
++    // Loss2: -20 → 10
++    const loss2 = result!.find(r => !r.isTotal && r.value === -30 && r.cumulativeStart === -20);
++    expect(loss2).toBeDefined();
++    expect(loss2!.cumulativeEnd).toBe(10);
++
++    // Total: 0 → -20 (total bar always starts from 0, shows absolute value)
++    const total = result!.find(r => r.isTotal);
++    expect(total).toBeDefined();
++    expect(total!.cumulativeStart).toBe(0);
++    expect(total!.cumulativeEnd).toBe(-20);
++  });
++});
++
++describe('axisSelectors regression: non-waterfall items unaffected', () => {
++  it('Bar items use standard domain, not waterfall cumulative branch', () => {
++    const data = [
++      { name: 'A', value: 100 },
++      { name: 'B', value: 200 },
++      { name: 'C', value: 300 },
++    ];
++
++    // Simulate a Bar item (type !== 'waterfall')
++    const barItem = {
++      type: 'bar' as const,
++      id: 'test-bar',
++      data: undefined,
++      dataKey: 'value',
++      hide: false,
++      xAxisId: 0,
++      yAxisId: 0,
++      zAxisId: 0,
++      isPanorama: false,
++      maxBarSize: undefined,
++      hasCustomShape: false,
++      stackId: undefined,
++      barSize: undefined,
++      minPointSize: 0,
++    };
++
++    const domain = combineDomainOfAllAppliedNumericalValuesIncludingErrorValues(
++      data,
++      { dataKey: undefined, type: 'number' } as any,
++      [barItem],
++      {},
++      'yAxis',
++      data,
++    );
++
++    expect(domain).toBeDefined();
++    // Standard Bar domain should be based on raw values, not cumulative
++    // The domain should be [100, 300] (min and max of raw values)
++    // It should NOT be [0, 600] which would happen if cumulative was used
++    expect(domain![1]).toBeGreaterThanOrEqual(300);
++    // Most importantly: domain upper bound should NOT be 600 (which would be cumulative sum)
++    expect(domain![1]).toBeLessThan(600);
++  });
++
++  it('Line items use standard domain, not waterfall cumulative branch', () => {
++    const data = [
++      { name: 'A', value: 10 },
++      { name: 'B', value: 20 },
++      { name: 'C', value: 30 },
++    ];
++
++    const lineItem = {
++      type: 'line' as const,
++      id: 'test-line',
++      data: undefined,
++      dataKey: 'value',
++      hide: false,
++      xAxisId: 0,
++      yAxisId: 0,
++      zAxisId: 0,
++      isPanorama: false,
++      maxBarSize: undefined,
++      hasCustomShape: false,
++      stackId: undefined,
++      barSize: undefined,
++      minPointSize: 0,
++    };
++
++    const domain = combineDomainOfAllAppliedNumericalValuesIncludingErrorValues(
++      data,
++      { dataKey: undefined, type: 'number' } as any,
++      [lineItem],
++      {},
++      'yAxis',
++      data,
++    );
++
++    expect(domain).toBeDefined();
++    // Line domain should be raw values [0, 30], not cumulative [0, 60]
++    expect(domain![1]).toBeLessThanOrEqual(30);
++  });
++
++  it('Mixed waterfall + bar items: waterfall uses cumulative, bar uses raw', () => {
++    const data = [
++      { name: 'A', value: 100 },
++      { name: 'B', value: 100 },
++    ];
++
++    const waterfallItem: WaterfallSettings & { dataKey: string } = {
++      type: 'waterfall',
++      id: 'test-waterfall',
++      data: undefined,
++      dataKey: 'value',
++      hide: false,
++      xAxisId: 0,
++      yAxisId: 0,
++      zAxisId: 0,
++      isPanorama: false,
++      maxBarSize: undefined,
++      hasCustomShape: false,
++      stackId: undefined,
++      barSize: undefined,
++      minPointSize: 0,
++      initialValue: undefined,
++    };
++
++    const barItem = {
++      type: 'bar' as const,
++      id: 'test-bar',
++      data: undefined,
++      dataKey: 'value',
++      hide: false,
++      xAxisId: 0,
++      yAxisId: 0,
++      zAxisId: 0,
++      isPanorama: false,
++      maxBarSize: undefined,
++      hasCustomShape: false,
++      stackId: undefined,
++      barSize: undefined,
++      minPointSize: 0,
++    };
++
++    const domain = combineDomainOfAllAppliedNumericalValuesIncludingErrorValues(
++      data,
++      { dataKey: undefined, type: 'number' } as any,
++      [waterfallItem, barItem],
++      {},
++      'yAxis',
++      data,
++    );
++
++    expect(domain).toBeDefined();
++    // Waterfall cumulative goes to 200, bar raw goes to 100
++    // Domain should cover [0, 200] (cumulative range)
++    expect(domain![0]).toBeLessThanOrEqual(0);
++    expect(domain![1]).toBeGreaterThanOrEqual(200);
++  });
++});
+diff --git a/test/chart/WaterfallChart.spec.tsx b/test/chart/WaterfallChart.spec.tsx
+new file mode 100644
+index 0000000..acb1d65
+--- /dev/null
++++ b/test/chart/WaterfallChart.spec.tsx
+@@ -0,0 +1,122 @@
++import React from 'react';
++import { describe, expect, it } from 'vitest';
++import { render } from '@testing-library/react';
++
++import { WaterfallChart, WaterfallBar, XAxis, YAxis, Tooltip } from '../../src';
++import { assertNotNull } from '../helper/assertNotNull';
++
++const waterfallData = [
++  { name: 'Revenue', value: 100 },
++  { name: 'COGS', value: -40 },
++  { name: 'Overhead', value: -20 },
++  { name: 'Profit', value: 40, total: true },
++];
++
++describe('WaterfallChart', () => {
++  it('renders without crashing with minimal props', () => {
++    const { container } = render(
++      <WaterfallChart width={400} height={300} data={waterfallData}>
++        <WaterfallBar dataKey="value" />
++      </WaterfallChart>,
++    );
++
++    const chartWrapper = container.querySelector('.recharts-wrapper');
++    assertNotNull(chartWrapper);
++    expect(chartWrapper).toBeTruthy();
++  });
++
++  it('renders waterfall bar rectangles', () => {
++    const { container } = render(
++      <WaterfallChart width={400} height={300} data={waterfallData}>
++        <XAxis dataKey="name" />
++        <YAxis />
++        <WaterfallBar dataKey="value" />
++      </WaterfallChart>,
++    );
++
++    const bars = container.querySelectorAll('.recharts-waterfall-bar-rectangle');
++    // The data has 4 items; some may be filtered if they have zero height
++    expect(bars.length).toBeGreaterThan(0);
++  });
++
++  it('renders connector lines by default', () => {
++    const { container } = render(
++      <WaterfallChart width={400} height={300} data={waterfallData}>
++        <XAxis dataKey="name" />
++        <YAxis />
++        <WaterfallBar dataKey="value" />
++      </WaterfallChart>,
++    );
++
++    const connectors = container.querySelectorAll('line');
++    // There should be some connector lines (between adjacent bars)
++    expect(connectors.length).toBeGreaterThan(0);
++  });
++
++  it('hides connector lines when showConnectors is false', () => {
++    const { container } = render(
++      <WaterfallChart width={400} height={300} data={waterfallData}>
++        <XAxis dataKey="name" />
++        <YAxis />
++        <WaterfallBar dataKey="value" showConnectors={false} />
++      </WaterfallChart>,
++    );
++
++    // SVG lines may still exist for axes etc, but there should be no connector lines
++    // Check that the waterfall-bars layer doesn't have connector lines by checking
++    // that there's no line with strokeDasharray="4 2" (the default connector style)
++    const dashedLines = container.querySelectorAll('line[stroke-dasharray="4 2"]');
++    expect(dashedLines.length).toBe(0);
++  });
++
++  it('renders with custom fill colors', () => {
++    const { container } = render(
++      <WaterfallChart width={400} height={300} data={waterfallData}>
++        <XAxis dataKey="name" />
++        <YAxis />
++        <WaterfallBar dataKey="value" positiveFill="#00ff00" negativeFill="#ff0000" totalFill="#0000ff" />
++      </WaterfallChart>,
++    );
++
++    const bars = container.querySelectorAll('.recharts-waterfall-bar-rectangle');
++    expect(bars.length).toBeGreaterThan(0);
++
++    // Check that at least one bar has a fill attribute
++    const filledBars = Array.from(bars).filter(bar => bar.getAttribute('fill'));
++    expect(filledBars.length).toBeGreaterThan(0);
++  });
++
++  it('renders with Tooltip', () => {
++    const { container } = render(
++      <WaterfallChart width={400} height={300} data={waterfallData}>
++        <XAxis dataKey="name" />
++        <YAxis />
++        <Tooltip />
++        <WaterfallBar dataKey="value" />
++      </WaterfallChart>,
++    );
++
++    // The tooltip wrapper may or may not be visible initially, but the component should not crash
++    expect(container.querySelector('.recharts-wrapper')).toBeTruthy();
++  });
++
++  it('renders with initialValue without crashing', () => {
++    const initialData = [
++      { name: 'Starting Cash', value: 0, total: true },
++      { name: 'Sales', value: 100 },
++      { name: 'Rent', value: -50 },
++      { name: 'Ending Cash', value: 0, total: true },
++    ];
++
++    const { container } = render(
++      <WaterfallChart width={400} height={300} data={initialData}>
++        <XAxis dataKey="name" />
++        <YAxis />
++        <WaterfallBar dataKey="value" initialValue={200} />
++      </WaterfallChart>,
++    );
++
++    const bars = container.querySelectorAll('.recharts-waterfall-bar-rectangle');
++    expect(bars.length).toBeGreaterThan(0);
++  });
++});

@@ -1,0 +1,7 @@
+name: recharts-waterfall
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - nodejs=20
+  - git
